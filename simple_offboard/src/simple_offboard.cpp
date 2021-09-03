@@ -637,16 +637,19 @@ void SimpleOffboard::getNavigateSetpoint(const rclcpp::Time& stamp, float speed,
 
 inline void SimpleOffboard::checkManualControl()
 {
+
+    RCLCPP_INFO(this->get_logger(), "Check manual control");
+
 	if (this->manual_control_timeout != std::chrono::duration<double>::zero() && (this->now() - this->manual_control->header.stamp) > this->manual_control_timeout) {
 		throw std::runtime_error("Manual control timeout, RC is switched off?");
 	}
 
 	if (this->check_kill_switch) {
 		// switch values: https://github.com/PX4/PX4-Autopilot/blob/c302514a0809b1765fafd13c014d705446ae1113/msg/manual_control_setpoint.msg#L3
-		const uint8_t SWITCH_POS_NONE = 0; // switch is not mapped
+		// const uint8_t SWITCH_POS_NONE = 0; // switch is not mapped
 		const uint8_t SWITCH_POS_ON = 1; // switch activated
-		const uint8_t SWITCH_POS_MIDDLE = 2; // middle position
-		const uint8_t SWITCH_POS_OFF = 3; // switch not activated
+		// const uint8_t SWITCH_POS_MIDDLE = 2; // middle position
+		// const uint8_t SWITCH_POS_OFF = 3; // switch not activated
 
 		const int KILL_SWITCH_BIT = 12; // https://github.com/PX4/Firmware/blob/c302514a0809b1765fafd13c014d705446ae1113/src/modules/mavlink/mavlink_messages.cpp#L3975
 		uint8_t kill_switch = (this->manual_control->buttons & (0b11 << KILL_SWITCH_BIT)) >> KILL_SWITCH_BIT;
@@ -658,9 +661,11 @@ inline void SimpleOffboard::checkManualControl()
 
 inline void SimpleOffboard::checkState()
 {
+    RCLCPP_INFO(this->get_logger(), "Checking state timeout");
 	if ( (this->now() - this->state->header.stamp) > this->state_timeout )
 		throw std::runtime_error("State timeout, check mavros settings");
 
+    RCLCPP_INFO(this->get_logger(), "Checking connected state");
 	if (!this->state->connected)
 		throw std::runtime_error("No connection to FCU, https://clover.coex.tech/connection");
 }
@@ -1045,6 +1050,7 @@ bool SimpleOffboard::setRates(std::shared_ptr<SetRates::Request> req, std::share
 
 bool SimpleOffboard::land(std::shared_ptr<std_srvs::srv::Trigger::Request> req, std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
     RCLCPP_INFO(this->get_logger(), "Received Land Request");
+    (void)req; // Deliberately unused parameter as Trigger request is empty. https://stackoverflow.com/questions/1486904/how-do-i-best-silence-a-warning-about-unused-variables
     try {
 		if (this->busy)
 			throw std::runtime_error("Busy");
