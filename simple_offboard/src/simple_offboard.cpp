@@ -27,6 +27,7 @@
 #include <tf2_ros/static_transform_broadcaster.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 
+#include <std_msgs/msg/empty.hpp>
 #include <std_srvs/srv/trigger.hpp>
 
 #include <geometry_msgs/msg/pose_stamped.hpp>
@@ -45,6 +46,7 @@
 #include "mavros_msgs/msg/manual_control.hpp"
 #include "mavros_msgs/srv/command_bool.hpp"
 #include "mavros_msgs/srv/set_mode.hpp"
+#include "mavros_msgs/srv/command_long.hpp"
 
 #include "simple_offboard_msgs/srv/get_telemetry.hpp"
 #include "simple_offboard_msgs/srv/navigate.hpp"
@@ -104,6 +106,8 @@ class SimpleOffboard : public rclcpp::Node
         bool setAttitude(std::shared_ptr<SetAttitude::Request> req, std::shared_ptr<SetAttitude::Response> res);
         bool setRates(std::shared_ptr<SetRates::Request> req, std::shared_ptr<SetRates::Response> res);
         bool land(std::shared_ptr<std_srvs::srv::Trigger::Request> req, std::shared_ptr<std_srvs::srv::Trigger::Response> res);
+
+        bool emergency_stop();
 
     private:
 
@@ -194,6 +198,7 @@ class SimpleOffboard : public rclcpp::Node
         // Service Clients
         rclcpp::Client<mavros_msgs::srv::CommandBool>::SharedPtr        arming;
         rclcpp::Client<mavros_msgs::srv::SetMode>::SharedPtr            set_mode;
+        rclcpp::Client<mavros_msgs::srv::CommandLong>::SharedPtr        mavros_command;
 
         // Publishers
         rclcpp::Publisher<PoseStamped>::SharedPtr                       position_pub;
@@ -212,6 +217,8 @@ class SimpleOffboard : public rclcpp::Node
         rclcpp::Subscription<mavros_msgs::msg::ManualControl>::SharedPtr manual_control_sub;
         rclcpp::Subscription<PoseStamped>::SharedPtr                     local_position_sub;
 
+        rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr            emergency_stop_sub;
+
         // Service Servers
         rclcpp::Service<simple_offboard_msgs::srv::GetTelemetry>::SharedPtr      gt_serv;
         rclcpp::Service<simple_offboard_msgs::srv::Navigate>::SharedPtr          na_serv;
@@ -220,12 +227,13 @@ class SimpleOffboard : public rclcpp::Node
         rclcpp::Service<simple_offboard_msgs::srv::SetVelocity>::SharedPtr       sv_serv;
         rclcpp::Service<simple_offboard_msgs::srv::SetAttitude>::SharedPtr       sa_serv;
         rclcpp::Service<simple_offboard_msgs::srv::SetRates>::SharedPtr          sr_serv;
-        rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr              ld_serv;
+        rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr                       ld_serv;
 
         rclcpp::CallbackGroup::SharedPtr callback_group_services_;
         rclcpp::CallbackGroup::SharedPtr callback_group_timers_;
         rclcpp::CallbackGroup::SharedPtr callback_group_clients_;
         rclcpp::CallbackGroup::SharedPtr callback_group_subscribers_;
+        rclcpp::CallbackGroup::SharedPtr callback_group_subscribers_estop_;
 
 };
 
@@ -243,6 +251,8 @@ SimpleOffboard::SimpleOffboard() :
     this->callback_group_timers_ = this->create_callback_group(
       rclcpp::CallbackGroupType::Reentrant);
     this->callback_group_subscribers_ = this->create_callback_group(
+      rclcpp::CallbackGroupType::Reentrant);
+    this->callback_group_subscribers_estop_ = this->create_callback_group(
       rclcpp::CallbackGroupType::Reentrant);
     this->callback_group_clients_ = this->create_callback_group(
       rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -278,11 +288,12 @@ SimpleOffboard::SimpleOffboard() :
 	telemetry_transform_timeout = this->get_timeout_parameter("telemetry_transform_timeout", 0.5);
 	offboard_timeout = this->get_timeout_parameter("offboard_timeout", 3.0);
 	land_timeout = this->get_timeout_parameter("land_timeout", 3.0);
-	arming_timeout = this->get_timeout_parameter("arming_timeout", 4.0);
+	arming_timeout = this->get_timeout_parameter("arming_timeout", 10.0);
 
     // Initialise Service Clients
     this->arming = this->create_client<mavros_msgs::srv::CommandBool>("mavros/cmd/arming", rmw_qos_profile_services_default, this->callback_group_clients_);
     this->set_mode = this->create_client<mavros_msgs::srv::SetMode>("mavros/set_mode", rmw_qos_profile_services_default, this->callback_group_clients_);
+    this->mavros_command = this->create_client<mavros_msgs::srv::CommandLong>("mavros/cmd/command", rmw_qos_profile_services_default, this->callback_group_clients_);
 
     // Initialise Telemetry Subscribers
     auto sub_opt = rclcpp::SubscriptionOptions();
@@ -302,6 +313,12 @@ SimpleOffboard::SimpleOffboard() :
         "mavros/manual_control/control", 1, [this](const mavros_msgs::msg::ManualControl::SharedPtr msg){this->manual_control = msg;});
     this->local_position_sub =  this->create_subscription<PoseStamped>(
         "mavros/local_position/pose", 1, [this](const PoseStamped::SharedPtr s){this->handleLocalPosition(s);}, sub_opt);
+
+    auto estop_sub_opt = rclcpp::SubscriptionOptions();
+    estop_sub_opt.callback_group = this->callback_group_subscribers_estop_;
+    this->emergency_stop_sub = this->create_subscription<std_msgs::msg::Empty>(
+        "/emergency_stop", 1, [this](const std_msgs::msg::Empty::SharedPtr msg){(void)msg; this->emergency_stop();}, estop_sub_opt);
+
 
     // Initialise Publishers
     position_pub     = this->create_publisher<PoseStamped>("mavros/setpoint_position/local", 1);
@@ -330,6 +347,39 @@ SimpleOffboard::SimpleOffboard() :
     this->publish(this->now());
 
     RCLCPP_INFO(this->get_logger(), "Simple Offboard Controller Initialised");
+}
+
+bool SimpleOffboard::emergency_stop() {
+    RCLCPP_WARN(this->get_logger(), "Emergency Stop activated, sending Kill");
+    // Kill current setpoint trigger:
+    if (this->setpoint_timer) {
+        this->setpoint_timer->cancel();
+    }
+
+    // Cancel current set navigation paths
+    this->nav_from_sp_flag = false;
+
+    // Kill Drone Rotors
+    auto commandCall = std::make_shared<mavros_msgs::srv::CommandLong::Request>();
+    commandCall->broadcast = false;
+    commandCall->command = 400;
+    commandCall->param1 = 0.0;
+    commandCall->param2 = 21196.0;
+    commandCall->param3 = 0.0;
+    commandCall->param4 = 0.0;
+    commandCall->param5 = 0.0;
+    commandCall->param6 = 0.0;
+    commandCall->param7 = 0.0;
+    while (!this->mavros_command->wait_for_service(std::chrono::duration<float>(0.1))) {
+        if (!rclcpp::ok()) {
+            RCLCPP_ERROR(this->get_logger(), "Interrupted while waiting for command service. Exiting.");
+            throw std::runtime_error("Interrupted while waiting for command service. Exiting.");
+            return false;
+        }
+        RCLCPP_INFO(this->get_logger(), "service not available, waiting again...");
+    }
+    auto result_future = this->mavros_command->async_send_request(commandCall);
+    return true;
 }
 
 inline std::chrono::duration<double> SimpleOffboard::get_timeout_parameter(string name, double default_param, bool invert) {
@@ -827,6 +877,7 @@ bool SimpleOffboard::serve(enum setpoint_type_t sp_type, float x, float y, float
                     message = "Navigating from current setpoint";
                     this->nav_start = this->position_msg;
                 } else {
+                    message = "navigating from current local position";
                     this->nav_start = *this->local_position;
                 }
                 this->nav_speed = speed;

@@ -20,6 +20,7 @@ The node advertises the following set of services:
 - `set_rates` (srv/SetRates) - Set pitch, roll, yaw rates and throttle levels for lower level control
 - `land` (std_srvs/srv/Trigger) - Switch drone to landing mode.
 
+The node also listens on `/emergency_stop` (`std_msgs/msg/Empty`) and will send the `px4` estop code to `mavros/cmd/command` cutting off all motors.
 
 ## License
 
