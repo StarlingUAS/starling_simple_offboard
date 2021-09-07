@@ -16,6 +16,7 @@
 #include <boost/algorithm/string.hpp>
 #include <algorithm>
 #include <stdexcept>
+#include <cmath>
 
 #include <GeographicLib/Geodesic.hpp> // needed for global to local transformations but cannot find it...
 
@@ -55,6 +56,7 @@
 #include "simple_offboard_msgs/srv/set_velocity.hpp"
 #include "simple_offboard_msgs/srv/set_attitude.hpp"
 #include "simple_offboard_msgs/srv/set_rates.hpp"
+#include "simple_offboard_msgs/srv/takeoff.hpp"
 
 using std::string;
 using std::isnan;
@@ -106,6 +108,8 @@ class SimpleOffboard : public rclcpp::Node
         bool setAttitude(std::shared_ptr<SetAttitude::Request> req, std::shared_ptr<SetAttitude::Response> res);
         bool setRates(std::shared_ptr<SetRates::Request> req, std::shared_ptr<SetRates::Response> res);
         bool land(std::shared_ptr<std_srvs::srv::Trigger::Request> req, std::shared_ptr<std_srvs::srv::Trigger::Response> res);
+        bool hold(std::shared_ptr<std_srvs::srv::Trigger::Request> req, std::shared_ptr<std_srvs::srv::Trigger::Response> res);
+        bool takeoff(std::shared_ptr<simple_offboard_msgs::srv::Takeoff::Request> req, std::shared_ptr<simple_offboard_msgs::srv::Takeoff::Response> res);
 
         bool emergency_stop();
 
@@ -131,7 +135,7 @@ class SimpleOffboard : public rclcpp::Node
         std::chrono::duration<double> get_timeout_parameter(string name, double default_param, bool invert = false);
         void wait_for_offboard();
         void wait_for_arm();
-        void wait_for_land();
+        void wait_for_set_mode(const string custom_mode, std::chrono::duration<double> timeout);
         bool checkTransformExistsBlocking(const string& target_frame, const string& source_frame, const rclcpp::Time& time, const rclcpp::Duration& timeout);
         void publishSetpoint(const rclcpp::Time& stamp, bool auto_arm);
         void restartSetpointTimer();
@@ -166,6 +170,8 @@ class SimpleOffboard : public rclcpp::Node
         std::chrono::duration<double> global_position_timeout;
         std::chrono::duration<double> battery_timeout;
         std::chrono::duration<double> manual_control_timeout;
+        std::chrono::duration<double> takeoff_timeout;
+        float takeoff_epsilon;
         float default_speed;
         bool auto_release;
         bool land_only_in_offboard, nav_from_sp, check_kill_switch;
@@ -183,6 +189,7 @@ class SimpleOffboard : public rclcpp::Node
         TwistStamped rates_msg;
         TransformStamped target, setpoint;
         geometry_msgs::msg::TransformStamped body;
+        geometry_msgs::msg::TransformStamped base_link;
 
         // State
         PoseStamped nav_start;
@@ -228,6 +235,8 @@ class SimpleOffboard : public rclcpp::Node
         rclcpp::Service<simple_offboard_msgs::srv::SetAttitude>::SharedPtr       sa_serv;
         rclcpp::Service<simple_offboard_msgs::srv::SetRates>::SharedPtr          sr_serv;
         rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr                       ld_serv;
+        rclcpp::Service<simple_offboard_msgs::srv::Takeoff>::SharedPtr           tk_serv;
+        rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr                       hd_serv;
 
         rclcpp::CallbackGroup::SharedPtr callback_group_services_;
         rclcpp::CallbackGroup::SharedPtr callback_group_timers_;
@@ -273,8 +282,10 @@ SimpleOffboard::SimpleOffboard() :
 	this->get_parameter_or("nav_from_sp", this->nav_from_sp, true);
 	this->get_parameter_or("check_kill_switch", this->check_kill_switch, true);
 	this->get_parameter_or("default_speed", this->default_speed, 0.5f);
-    this->get_parameter_or("body_frame", this->body.child_frame_id, string("base_link"));
-	this->get_parameters("reference_frames", this->reference_frames);
+    this->get_parameter_or("body_frame", this->body.child_frame_id, string("body"));
+    this->get_parameter_or("fcu_frame", this->base_link.child_frame_id, this->fcu_frame);
+    this->get_parameter_or("takeoff_epsilon", this->takeoff_epsilon, 0.05f);
+	this->get_parameters("reference_frames", this->reference_frames); // Params in format reference_frames.<frame_id>
 
     // Get Timeout parameters
     setpoint_rate = this->get_timeout_parameter("setpoint_rate", 30.0, true);
@@ -288,6 +299,7 @@ SimpleOffboard::SimpleOffboard() :
 	telemetry_transform_timeout = this->get_timeout_parameter("telemetry_transform_timeout", 0.5);
 	offboard_timeout = this->get_timeout_parameter("offboard_timeout", 3.0);
 	land_timeout = this->get_timeout_parameter("land_timeout", 3.0);
+    takeoff_timeout = this->get_timeout_parameter("takeoff_timeout", 30.0);
 	arming_timeout = this->get_timeout_parameter("arming_timeout", 10.0);
 
     // Initialise Service Clients
@@ -337,6 +349,8 @@ SimpleOffboard::SimpleOffboard() :
     sa_serv = this->create_service<simple_offboard_msgs::srv::SetAttitude>("set_attitude", std::bind(&SimpleOffboard::setAttitude, this, _1, _2));
     sr_serv = this->create_service<simple_offboard_msgs::srv::SetRates>("set_rates", std::bind(&SimpleOffboard::setRates, this, _1, _2));
     ld_serv = this->create_service<std_srvs::srv::Trigger>("land", std::bind(&SimpleOffboard::land, this, _1, _2));
+    tk_serv = this->create_service<simple_offboard_msgs::srv::Takeoff>("takeoff", std::bind(&SimpleOffboard::takeoff, this, _1, _2), rmw_qos_profile_services_default, this->callback_group_services_);
+    hd_serv = this->create_service<std_srvs::srv::Trigger>("hold", std::bind(&SimpleOffboard::hold, this, _1, _2), rmw_qos_profile_services_default, this->callback_group_services_);
 
     // Initialise Internal State
     this->position_msg.header.frame_id = this->local_frame;
@@ -478,11 +492,11 @@ void SimpleOffboard::wait_for_arm(){
     RCLCPP_INFO(this->get_logger(), "Confirmed Armed");
 }
 
-void SimpleOffboard::wait_for_land(){
+void SimpleOffboard::wait_for_set_mode(const string custom_mode, std::chrono::duration<double> timeout){
     auto start = this->now();
-    while(this->state->mode != "AUTO.LAND") {
-        RCLCPP_INFO(this->get_logger(), "Waiting for Landing");
-        if (this->now() - start > this->land_timeout) {
+    while(this->state->mode != custom_mode) {
+        RCLCPP_INFO(this->get_logger(), "Waiting for %s", custom_mode.c_str());
+        if (this->now() - start > timeout) {
             RCLCPP_ERROR(this->get_logger(), "Landing timed out");
             throw std::runtime_error("Landing timed out");
         }
@@ -555,18 +569,30 @@ void SimpleOffboard::handleLocalPosition(const PoseStamped::SharedPtr pose)
 
 inline void SimpleOffboard::publishBodyFrame()
 {
-	if (this->body.child_frame_id.empty()) return;
+    auto stamp = this->now();
+	if (!this->body.child_frame_id.empty()) {
 
-	tf2::Quaternion q;
-	q.setRPY(0, 0, tf2::getYaw(this->local_position->pose.orientation));
-    this->body.transform.rotation = tf2::toMsg(q);
+        tf2::Quaternion q;
+        q.setRPY(0, 0, tf2::getYaw(this->local_position->pose.orientation));
+        this->body.transform.rotation = tf2::toMsg(q);
 
-	this->body.transform.translation.x = this->local_position->pose.position.x;
-	this->body.transform.translation.y = this->local_position->pose.position.y;
-	this->body.transform.translation.z = this->local_position->pose.position.z;
-	this->body.header.frame_id = this->local_position->header.frame_id;
-	this->body.header.stamp = this->local_position->header.stamp;
-	this->transform_broadcaster->sendTransform(this->body);
+        this->body.transform.translation.x = this->local_position->pose.position.x;
+        this->body.transform.translation.y = this->local_position->pose.position.y;
+        this->body.transform.translation.z = this->local_position->pose.position.z;
+        this->body.header.frame_id = this->local_position->header.frame_id;
+        this->body.header.stamp = this->local_position->header.stamp;
+        this->transform_broadcaster->sendTransform(this->body);
+    }
+
+    if (!this->base_link.child_frame_id.empty()) {
+        this->base_link.transform.rotation = this->local_position->pose.orientation;
+        this->base_link.transform.translation.x = this->local_position->pose.position.x;
+        this->base_link.transform.translation.y = this->local_position->pose.position.y;
+        this->base_link.transform.translation.z = this->local_position->pose.position.z;
+        this->base_link.header.frame_id = this->local_position->header.frame_id;
+        this->base_link.header.stamp = this->local_position->header.stamp;
+        this->transform_broadcaster->sendTransform(this->base_link);
+    }
 }
 
 void SimpleOffboard::publish(const rclcpp::Time& stamp) {
@@ -744,7 +770,8 @@ bool SimpleOffboard::serve(enum setpoint_type_t sp_type, float x, float y, float
         if (frame_id.empty())
             frame_id = this->local_frame;
 
-        // look up for reference frame
+        // look up for reference frame, if cannot be found use self as reference_frame
+        // Note in ROS2 for the reference frame to register, the delimter is '.' e.g. reference_frames.body
         auto search = this->reference_frames.find(frame_id);
         const string& reference_frame = search == reference_frames.end() ? frame_id: search->second;
 
@@ -909,8 +936,8 @@ bool SimpleOffboard::serve(enum setpoint_type_t sp_type, float x, float y, float
                     q.setRPY(0, 0, yaw);
                     ps.pose.orientation = tf2::toMsg(q);
                 }
-
                 this->tf_buffer->transform(ps, this->setpoint_position, reference_frame);
+                RCLCPP_INFO(this->get_logger(), "Serve: Setpoint frame is %s (%f, %f, %f)", reference_frame.c_str(), this->setpoint_position.pose.position.x, this->setpoint_position.pose.position.y, this->setpoint_position.pose.position.z);
             }
 
             if (sp_type == VELOCITY) {
@@ -1116,28 +1143,9 @@ bool SimpleOffboard::land(std::shared_ptr<std_srvs::srv::Trigger::Request> req, 
 			}
 		}
 
-		auto sm = std::make_shared<mavros_msgs::srv::SetMode::Request>();
-		sm->custom_mode = "AUTO.LAND";
+        this->sendSetModeRequest("AUTO.LAND");
 
-        while (!this->set_mode->wait_for_service(std::chrono::duration<int>(2))) {
-            if (!rclcpp::ok()) {
-                RCLCPP_ERROR(this->get_logger(), "Interrupted while waiting for set mode service. Exiting.");
-                return 0;
-            }
-            RCLCPP_INFO(this->get_logger(), "service not available, waiting again...");
-        }
-
-        auto result_future = this->set_mode->async_send_request(sm);
-        if (result_future.wait_for(std::chrono::duration<double>(10.0)) != std::future_status::ready)
-        {
-            RCLCPP_ERROR(this->get_logger(), "Landing service call failed :(");
-            throw std::runtime_error("Landing Service call failed");
-            return 0;
-        }
-
-        auto result = result_future.get();
-
-		this->wait_for_land();
+		this->wait_for_set_mode("AUTO.LAND", this->land_timeout);
         busy = false;
         return true;
 
@@ -1147,6 +1155,74 @@ bool SimpleOffboard::land(std::shared_ptr<std_srvs::srv::Trigger::Request> req, 
 		busy = false;
 		return true;
 	}
+}
+
+bool SimpleOffboard::hold(std::shared_ptr<std_srvs::srv::Trigger::Request> req, std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+    RCLCPP_INFO(this->get_logger(), "Received Hold Request");
+    (void)req; // Deliberately unused parameter as Trigger request is empty. https://stackoverflow.com/questions/1486904/how-do-i-best-silence-a-warning-about-unused-variables
+
+    auto nav_req = std::make_shared<simple_offboard_msgs::srv::Navigate::Request>();
+    auto nav_res = std::make_shared<simple_offboard_msgs::srv::Navigate::Response>();
+    nav_req->x = 0.0;
+    nav_req->y = 0.0;
+    nav_req->z = 0.0;
+    nav_req->frame_id = "body";
+
+    this->navigate(nav_req, nav_res);
+    res->success = nav_res->success;
+    res->message = nav_res->message;
+    return res->success;
+}
+
+bool SimpleOffboard::takeoff(std::shared_ptr<simple_offboard_msgs::srv::Takeoff::Request> req, std::shared_ptr<simple_offboard_msgs::srv::Takeoff::Response> res) {
+
+    if (this->local_position->pose.position.z > 0.5 ){
+        res->success = false;
+        res->message = "Already Taken Off";
+        RCLCPP_WARN(this->get_logger(), "Received Takeoff Request, Already Taken Off, No Action Taken");
+        return false;
+    }
+
+    if (!req->height) {
+        req->height = 1.0; // Default takeoff height is 1m
+    }
+
+    if (!req->speed) {
+        req->speed = 0.5;
+    }
+
+    RCLCPP_INFO(this->get_logger(), "Received Takeoff Request, requested height set to %f at speed %f", req->height, req->speed);
+
+    auto nav_req = std::make_shared<simple_offboard_msgs::srv::Navigate::Request>();
+    auto nav_res = std::make_shared<simple_offboard_msgs::srv::Navigate::Response>();
+    nav_req->x = 0.0;
+    nav_req->y = 0.0;
+    nav_req->z = req->height;
+    nav_req->speed = req->speed;
+    nav_req->frame_id = "body";
+    nav_req->auto_arm = req->auto_arm;
+
+    std::thread{std::bind(&SimpleOffboard::navigate, this, _1, _2), nav_req, nav_res}.detach();
+
+    // this->navigate(nav_req, nav_res);
+
+
+    auto start = this->now();
+    while(fabs(this->local_position->pose.position.z - req->height) > this->takeoff_epsilon) {
+        RCLCPP_INFO(this->get_logger(), "Waiting for Takeoff");
+        if (this->now() - start > this->takeoff_timeout) {
+            res->success = false;
+            res->message = "Takeoff timed out";
+            RCLCPP_ERROR(this->get_logger(), "Takeoff timed out");
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    }
+    RCLCPP_INFO(this->get_logger(), "Takeoff Successful");
+
+    res->success = nav_res->success;
+    res->message = nav_res->message;
+    return res->success;
 }
 
 int main(int argc, char **argv)

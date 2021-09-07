@@ -20,6 +20,7 @@ find_package(ament_cmake REQUIRED)
 # uncomment the following section in order to fill in
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
+find_package(trajectory_msgs REQUIRED)
 
 # Build Messages and Services
 find_package(rosidl_default_generators REQUIRED)
@@ -32,6 +33,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/SetVelocity.srv"
   "srv/SetAttitude.srv"
   "srv/SetRates.srv"
+  "srv/SubmitTrajectory.srv"
+  "srv/Takeoff.srv"
+  DEPENDENCIES trajectory_msgs
 )
 ament_export_dependencies(rosidl_default_runtime)
 

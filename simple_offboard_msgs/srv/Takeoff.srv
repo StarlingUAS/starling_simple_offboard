@@ -1,0 +1,6 @@
+float32 height
+float32 speed
+bool auto_arm
+---
+bool success
+string message
