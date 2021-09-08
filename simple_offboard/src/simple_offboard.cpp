@@ -136,6 +136,7 @@ class SimpleOffboard : public rclcpp::Node
         void wait_for_offboard();
         void wait_for_arm();
         void wait_for_set_mode(const string custom_mode, std::chrono::duration<double> timeout);
+        bool wait_for_at_setpoint(const string action, const std::chrono::duration<double> timeout, const uint32_t sleep_delay=100, const bool zaxis_only=false);
         bool checkTransformExistsBlocking(const string& target_frame, const string& source_frame, const rclcpp::Time& time, const rclcpp::Duration& timeout);
         void publishSetpoint(const rclcpp::Time& stamp, bool auto_arm);
         void restartSetpointTimer();
@@ -171,7 +172,7 @@ class SimpleOffboard : public rclcpp::Node
         std::chrono::duration<double> battery_timeout;
         std::chrono::duration<double> manual_control_timeout;
         std::chrono::duration<double> takeoff_timeout;
-        float takeoff_epsilon;
+        float location_arrival_epsilon;
         float default_speed;
         bool auto_release;
         bool land_only_in_offboard, nav_from_sp, check_kill_switch;
@@ -284,7 +285,7 @@ SimpleOffboard::SimpleOffboard() :
 	this->get_parameter_or("default_speed", this->default_speed, 0.5f);
     this->get_parameter_or("body_frame", this->body.child_frame_id, string("body"));
     this->get_parameter_or("fcu_frame", this->base_link.child_frame_id, this->fcu_frame);
-    this->get_parameter_or("takeoff_epsilon", this->takeoff_epsilon, 0.05f);
+    this->get_parameter_or("location_arrival_epsilon", this->location_arrival_epsilon, 0.05f);
 	this->get_parameters("reference_frames", this->reference_frames); // Params in format reference_frames.<frame_id>
 
     // Get Timeout parameters
@@ -503,6 +504,23 @@ void SimpleOffboard::wait_for_set_mode(const string custom_mode, std::chrono::du
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     RCLCPP_INFO(this->get_logger(), "Confirmed Land Mode");
+}
+
+bool SimpleOffboard::wait_for_at_setpoint(const string action, const std::chrono::duration<double> timeout, const uint32_t sleep_delay, const bool zaxis_only) {
+    bool xcomp, ycomp, zcomp;
+    auto start = this->now();
+    do{
+        RCLCPP_INFO(this->get_logger(), "Waiting for " + action);
+        if (this->now() - start > timeout) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(sleep_delay));
+        zcomp = fabs(this->local_position->pose.position.z - this->setpoint_position_transformed.pose.position.z) > this->location_arrival_epsilon;
+        xcomp = fabs(this->local_position->pose.position.x - this->setpoint_position_transformed.pose.position.x) > this->location_arrival_epsilon;
+        ycomp = fabs(this->local_position->pose.position.y - this->setpoint_position_transformed.pose.position.y) > this->location_arrival_epsilon;
+    } while(( (zaxis_only && zcomp) || (!zaxis_only && (zcomp || xcomp || ycomp)) ) );
+    RCLCPP_INFO(this->get_logger(), action + " Successful");
+    return true;
 }
 
 bool SimpleOffboard::checkTransformExistsBlocking(const string& target_frame, const string& source_frame, const rclcpp::Time& time, const rclcpp::Duration& timeout) {
@@ -1097,8 +1115,19 @@ bool SimpleOffboard::getTelemetry(std::shared_ptr<GetTelemetry::Request> req, st
 }
 
 bool SimpleOffboard::navigate(std::shared_ptr<Navigate::Request> req, std::shared_ptr<Navigate::Response> res) {
-    RCLCPP_INFO(this->get_logger(), "Received Navigate Request to (%f, %f, %f, yaw: %f) speed: %f, frame: %s, auto_arm: %s", req->x, req->y, req->z, req->yaw, req->speed, req->frame_id.c_str(), req->auto_arm?"true":"false");
-	return this->serve(NAVIGATE, req->x, req->y, req->z, NAN, NAN, NAN, NAN, NAN, req->yaw, NAN, NAN, req->yaw_rate, NAN, NAN, NAN, req->speed, req->frame_id, req->auto_arm, res->success, res->message);
+    RCLCPP_INFO(this->get_logger(), "Received Navigate Request to (%f, %f, %f, yaw: %f) speed: %f, frame: %s, auto_arm: %s, blocking %s", req->x, req->y, req->z, req->yaw, req->speed, req->frame_id.c_str(), req->auto_arm?"true":"false", req->blocking?"true":"false");
+	this->serve(NAVIGATE, req->x, req->y, req->z, NAN, NAN, NAN, NAN, NAN, req->yaw, NAN, NAN, req->yaw_rate, NAN, NAN, NAN, req->speed, req->frame_id, req->auto_arm, res->success, res->message);
+    if (req->blocking) {
+        if(!this->wait_for_at_setpoint("Navigate", std::chrono::duration<double>(36000), 1000)){
+            res->success = false;
+            res->message = res->message + " Blocking Navigate timed out";
+            RCLCPP_ERROR(this->get_logger(), res->message);
+            return false;
+        } else {
+            res->message = res->message + " Navigation Successful";
+        }
+    }
+    return res->success;
 }
 
 bool SimpleOffboard::navigateGlobal(std::shared_ptr<NavigateGlobal::Request> req, std::shared_ptr<NavigateGlobal::Response> res) {
@@ -1161,14 +1190,30 @@ bool SimpleOffboard::hold(std::shared_ptr<std_srvs::srv::Trigger::Request> req, 
     RCLCPP_INFO(this->get_logger(), "Received Hold Request");
     (void)req; // Deliberately unused parameter as Trigger request is empty. https://stackoverflow.com/questions/1486904/how-do-i-best-silence-a-warning-about-unused-variables
 
-    auto nav_req = std::make_shared<simple_offboard_msgs::srv::Navigate::Request>();
-    auto nav_res = std::make_shared<simple_offboard_msgs::srv::Navigate::Response>();
+    auto nav_req = std::make_shared<simple_offboard_msgs::srv::SetPosition::Request>();
+    auto nav_res = std::make_shared<simple_offboard_msgs::srv::SetPosition::Response>();
     nav_req->x = 0.0;
     nav_req->y = 0.0;
     nav_req->z = 0.0;
     nav_req->frame_id = "body";
 
-    this->navigate(nav_req, nav_res);
+    try {
+        auto nav_client = this->create_client<simple_offboard_msgs::srv::SetPosition>("set_position", rmw_qos_profile_services_default, this->callback_group_clients_);
+        while (!nav_client->wait_for_service(std::chrono::duration<double>(0.01))) {
+            if (!rclcpp::ok()) {
+                RCLCPP_ERROR(this->get_logger(), "Interrupted while waiting for set mode service. Exiting.");
+                throw std::runtime_error("Interrupted while waiting for set mode service. Exiting.");
+            }
+            RCLCPP_INFO(this->get_logger(), "service not available, waiting again...");
+        }
+        auto result_future = nav_client->async_send_request(nav_req);
+    } catch (const std::exception& e) {
+		res->message = e.what();
+        res->success = false;
+		RCLCPP_ERROR(this->get_logger(), "%s", res->message.c_str());
+		return false;
+	}
+
     res->success = nav_res->success;
     res->message = nav_res->message;
     return res->success;
@@ -1194,7 +1239,7 @@ bool SimpleOffboard::takeoff(std::shared_ptr<simple_offboard_msgs::srv::Takeoff:
     RCLCPP_INFO(this->get_logger(), "Received Takeoff Request, requested height set to %f at speed %f", req->height, req->speed);
 
     auto nav_req = std::make_shared<simple_offboard_msgs::srv::Navigate::Request>();
-    auto nav_res = std::make_shared<simple_offboard_msgs::srv::Navigate::Response>();
+    // auto nav_res = std::make_shared<simple_offboard_msgs::srv::Navigate::Response>();
     nav_req->x = 0.0;
     nav_req->y = 0.0;
     nav_req->z = req->height;
@@ -1202,26 +1247,41 @@ bool SimpleOffboard::takeoff(std::shared_ptr<simple_offboard_msgs::srv::Takeoff:
     nav_req->frame_id = "body";
     nav_req->auto_arm = req->auto_arm;
 
-    std::thread{std::bind(&SimpleOffboard::navigate, this, _1, _2), nav_req, nav_res}.detach();
+    try {
+        auto nav_client = this->create_client<simple_offboard_msgs::srv::Navigate>("navigate", rmw_qos_profile_services_default, this->callback_group_clients_);
+        while (!nav_client->wait_for_service(std::chrono::duration<double>(0.01))) {
+            if (!rclcpp::ok()) {
+                RCLCPP_ERROR(this->get_logger(), "Interrupted while waiting for set mode service. Exiting.");
+                throw std::runtime_error("Interrupted while waiting for set mode service. Exiting.");
+            }
+            RCLCPP_INFO(this->get_logger(), "service not available, waiting again...");
+        }
+        auto result_future = nav_client->async_send_request(nav_req);
+        if (result_future.wait_for(std::chrono::duration<double>(30.0)) != std::future_status::ready)
+        {
+            throw std::runtime_error("Navigate Service call failed");
+        }
+        auto result = result_future.get();
+        if (!result->success) {
+            throw std::runtime_error("Navigate Service errored with: " + result->message);
+        }
+    } catch (const std::exception& e) {
+		res->message = e.what();
+        res->success = false;
+		RCLCPP_ERROR(this->get_logger(), "%s", res->message.c_str());
+		return false;
+	}
 
-    // this->navigate(nav_req, nav_res);
-
-
-    auto start = this->now();
-    while(fabs(this->local_position->pose.position.z - req->height) > this->takeoff_epsilon) {
-        RCLCPP_INFO(this->get_logger(), "Waiting for Takeoff");
-        if (this->now() - start > this->takeoff_timeout) {
-            res->success = false;
+    if (req->blocking) {
+        if(!this->wait_for_at_setpoint("Takeoff", this->takeoff_timeout, 1000, true)){
+             res->success = false;
             res->message = "Takeoff timed out";
             RCLCPP_ERROR(this->get_logger(), "Takeoff timed out");
             return false;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
     }
-    RCLCPP_INFO(this->get_logger(), "Takeoff Successful");
-
-    res->success = nav_res->success;
-    res->message = nav_res->message;
+    res->success = true;
+    res->message = "Takeoff Successful";
     return res->success;
 }
 

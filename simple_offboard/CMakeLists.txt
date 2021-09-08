@@ -29,15 +29,23 @@ find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(rosgraph_msgs REQUIRED)
 find_package(mavros_msgs REQUIRED)
+find_package(trajectory_msgs REQUIRED)
 find_package(Boost REQUIRED COMPONENTS system)
 find_package(GeographicLib REQUIRED)
 find_package(simple_offboard_msgs REQUIRED)
+find_package(libInterpolate REQUIRED)
 
 add_executable(simple_offboard src/simple_offboard.cpp)
 ament_target_dependencies(simple_offboard
   rclcpp std_msgs tf2 tf2_ros tf2_geometry_msgs std_srvs
   geometry_msgs sensor_msgs mavros_msgs GeographicLib simple_offboard_msgs
 )
+
+add_executable(trajectory_handler src/trajectory.cpp)
+ament_target_dependencies(trajectory_handler
+  rclcpp std_msgs std_srvs trajectory_msgs simple_offboard_msgs
+)
+target_link_libraries( trajectory_handler libInterpolate::Interpolate )
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -59,6 +67,7 @@ install(DIRECTORY
 
 install(TARGETS
   simple_offboard
+  trajectory_handler
   DESTINATION lib/${PROJECT_NAME}
 )
 

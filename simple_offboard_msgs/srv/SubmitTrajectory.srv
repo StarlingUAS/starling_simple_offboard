@@ -1,0 +1,6 @@
+trajectory_msgs/JointTrajectory trajectory
+string frame_id
+bool auto_arm
+---
+string message
+bool success
