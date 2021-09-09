@@ -1,6 +1,6 @@
 # Starling Simple Offboard
 
-This project provides a simple offboard controller for drones running mavros in ROS2. This began as a port of the simple_offboard controller written by CopterExpress for use with the [Clover Drone Platform](https://github.com/CopterExpress/clover).
+This project provides a simple offboard controller for drones running mavros in ROS2. This began as a port of the simple_offboard controller node written by CopterExpress for use with the [Clover Drone Platform](https://github.com/CopterExpress/clover).
 
 This package contains both the controller `simple_offboard` node as well as the srvs seperately in `simple_offboard_msgs` for development of controllers which use this node.
 
@@ -12,15 +12,26 @@ This is a direct port of the `simple_offboard` module from the clover project. S
 The node advertises the following set of services:
 
 - `get_telemetry` (srv/GetTelemetry) - Returns telemetry
-- `navigate` (srv/Navigate) - Navigate to a position relative to a frame of reference (e.g. map or body)
+- `navigate` (srv/Navigate) - Navigate to a position relative to a frame of reference (e.g. map or body). *new* can also be a blocking call
 - `navigate_global` (srv/NavigateGlobal) - Navigate to a postiion lat long relative to frame of reference
 - `set_position` (srv/SetPosition) - Set the setpoint for position and yaw for continuous flow of target points
 - `set_velocity` (srv/SetVelocity) - Set speed and yaw setpoints
 - `set_attitude` (srv/SetAttidue) - Set pitch, roll, yaw and throttle levels for lower level control
 - `set_rates` (srv/SetRates) - Set pitch, roll, yaw rates and throttle levels for lower level control
+- `takeoff` (srv/Takeoff) - Takeoff to a paritcular height at a particular speed, can be a blocking call.
 - `land` (std_srvs/srv/Trigger) - Switch drone to landing mode.
+- `hold` (std_srvs/srv/Trigger) - Switch drone to hold mode.
 
 The node also listens on `/emergency_stop` (`std_msgs/msg/Empty`) and will send the `px4` estop code to `mavros/cmd/command` cutting off all motors.
+
+## *trajectory_handler* Node
+This node is intended to simplify the execution of simple trajectory following based tasks.
+
+It uses the [**libInterpolate**](https://github.com/CD3/libInterpolate) library for interpolation between trajectory points.
+
+The node advertises the following service:
+
+- `submit_trajectory` (srv/SubmitTrajectory) -
 
 ## License
 

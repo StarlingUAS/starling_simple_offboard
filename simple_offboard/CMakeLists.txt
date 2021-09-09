@@ -34,7 +34,7 @@ find_package(Boost REQUIRED COMPONENTS system)
 find_package(GeographicLib REQUIRED)
 find_package(simple_offboard_msgs REQUIRED)
 
-add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/external/libInterpolate)
+add_subdirectory(external/libInterpolate)
 
 add_executable(simple_offboard src/simple_offboard.cpp)
 ament_target_dependencies(simple_offboard

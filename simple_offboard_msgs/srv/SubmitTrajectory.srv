@@ -1,5 +1,12 @@
+# Submitted Trajectory
 trajectory_msgs/JointTrajectory trajectory
+# Trajectory type (i.e. position, velocity, attitude or rates)
+string type
+# Interpolation method from https://github.com/CD3/libInterpolate (i.e. linear, cubic or monotonic), defaults to cubic
+string interpolation_method
+# Frame of the trajectory, defaults to map frame
 string frame_id
+# Whether drone should auto_arm, defaults to false
 bool auto_arm
 ---
 string message
