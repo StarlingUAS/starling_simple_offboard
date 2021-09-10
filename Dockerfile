@@ -1,6 +1,6 @@
 ARG VERSION=latest
 ARG REGISTRY
-FROM ${REGISTRY}uobflightlabstarling/starling-controller-base:${VERSION}
+FROM ${REGISTRY}uobflightlabstarling/starling-controller-base:latest
 
 COPY simple_offboard /ros_ws/src/
 COPY simple_offboard_msgs /ros_ws/src/

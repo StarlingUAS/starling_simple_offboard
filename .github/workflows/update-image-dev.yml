@@ -41,12 +41,12 @@ jobs:
         uses: docker/bake-action@master
         with:
           files: |
-            ./docker-bake.hcl
+            ./buildtools/docker-bake.hcl
           targets: |
             starling-simple-offboard
           push: true
         env:
           BAKE_VERSION: ${{ steps.tag_name.outputs.GITHUB_TAG }}
-          BAKE_RELEASENAME: latest
+          BAKE_RELEASENAME: nightly
           BAKE_CACHETO_NAME: cache-dev
           BAKE_CACHEFROM_NAME: cache-dev
