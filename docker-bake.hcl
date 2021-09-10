@@ -35,7 +35,7 @@ group "stage1" {
 
 // This target depends on starling-controller-base
 target "starling-simple-offboard" {
-    context = "controllers/starling_simple_offboard"
+    context = "."
     args = {
         "VERSION": "${BAKE_VERSION}",
         "REGISTRY": "${BAKE_REGISTRY}"
