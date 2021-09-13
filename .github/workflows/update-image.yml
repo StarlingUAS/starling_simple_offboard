@@ -41,7 +41,7 @@ jobs:
         uses: docker/bake-action@master
         with:
           files: |
-            ./docker-bake.hcl
+            ./buildtools/docker-bake.hcl
           targets: |
             starling-simple-offboard
           push: true
