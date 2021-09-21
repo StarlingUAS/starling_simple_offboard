@@ -472,7 +472,7 @@ void TrajectoryHandler::setAttitude(const rclcpp::Duration time_elapsed) {
     req->pitch = this->interpolators[0](time_elapsed_sec);
     req->roll = this->interpolators[1](time_elapsed_sec);
     req->yaw = this->interpolators[2](time_elapsed_sec);
-    req->thrust = this->interpolators.size() >4? this->interpolators[3](time_elapsed_sec): 0.0; // Make interpolate later
+    req->thrust = this->interpolators.size() >3? this->interpolators[3](time_elapsed_sec): 0.0; // Make interpolate later
     req->frame_id = "map";
     req->auto_arm = true;
 
@@ -495,7 +495,7 @@ void TrajectoryHandler::setRates(const rclcpp::Duration time_elapsed) {
     req->pitch_rate = this->interpolators[0](time_elapsed_sec);
     req->roll_rate = this->interpolators[1](time_elapsed_sec);
     req->yaw_rate = this->interpolators[2](time_elapsed_sec);
-    req->thrust = this->interpolators.size() >4? this->interpolators[3](time_elapsed_sec): 0.0; // Make interpolate later
+    req->thrust = this->interpolators.size() >3? this->interpolators[3](time_elapsed_sec): 0.0; // Make interpolate later
     req->auto_arm = true;
 
     while (!this->sr_client->wait_for_service(std::chrono::duration<double>(0.01))) {
