@@ -6,6 +6,7 @@ float32 yaw_rate
 float32 speed
 string frame_id
 bool auto_arm
+bool blocking
 ---
 bool success
 string message
