@@ -29,4 +29,6 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh \
     && colcon build --packages-select simple_offboard_msgs simple_offboard \
     && rm -r build
 
-CMD ["ros2", "launch", "simple_offboard", "simple_offboard.launch.xml"]
+COPY run.sh .
+
+CMD ["./run.sh"]
