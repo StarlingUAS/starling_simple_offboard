@@ -18,11 +18,6 @@
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>trajectory_msgs</depend>
-  <depend>visualization_msgs</depend>
-  <depend>led_msgs</depend>
-  <depend>rosgraph_msgs</depend>
-  <depend>ws281x</depend>
-  <depend>vl53l1x</depend>
   <depend>mavros_msgs</depend>
   <depend>simple_offboard_msgs</depend>
   <!-- <depend>mavros_extras</depend> -->

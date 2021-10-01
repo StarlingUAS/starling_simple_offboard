@@ -285,7 +285,7 @@ SimpleOffboard::SimpleOffboard() :
 	this->get_parameter_or("default_speed", this->default_speed, 0.5f);
     this->get_parameter_or("body_frame", this->body.child_frame_id, string("body"));
     this->get_parameter_or("fcu_frame", this->base_link.child_frame_id, this->fcu_frame);
-    this->get_parameter_or("location_arrival_epsilon", this->location_arrival_epsilon, 0.05f);
+    this->get_parameter_or("location_arrival_epsilon", this->location_arrival_epsilon, 0.1f);
 	this->get_parameters("reference_frames", this->reference_frames); // Params in format reference_frames.<frame_id>
 
     // Get Timeout parameters
