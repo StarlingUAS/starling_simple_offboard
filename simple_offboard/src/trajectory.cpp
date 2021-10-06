@@ -209,18 +209,24 @@ void TrajectoryHandler::submitTrajectory(std::shared_ptr<simple_offboard_msgs::s
     this->frame_id = req->frame_id;
 
     if(req->interpolation_method.empty()) {
-        RCLCPP_INFO(this->get_logger(), "Interpolation method not received, setting to default 'cubic'");
-        req->interpolation_method == "cubic";
+        RCLCPP_INFO(this->get_logger(), "Interpolation method not received, setting to default 'linear'");
+        req->interpolation_method == "linear";
     }
+
+    // Check if already executing a trajectory
+    if (this->executing_trajectory) {
+        res->message = "Existing Trajectory Mission in Progress";
+        res->success = false;
+		RCLCPP_ERROR(this->get_logger(), "%s", res->message.c_str());
+		return;
+    }
+
 
     try {
         // Check if trajectory type has been given
         if (req->type == "" || !(req->type == "position" || req->type == "attitude") )
             throw std::runtime_error("Trajectory type not given or not recognised, select 'position' or 'attitude'");
 
-        // Check if already executing a trajectory
-        if (this->executing_trajectory)
-            throw std::runtime_error("Existing Trajectory Mission in Progress");
 
         // Check trajectory is populated
         if (req->trajectory.points.size() == 0)
@@ -349,7 +355,7 @@ void TrajectoryHandler::submitTrajectory(std::shared_ptr<simple_offboard_msgs::s
                 RCLCPP_INFO(this->get_logger(), "Waiting for Mission Start before going to first location (%f, %f, %f)", this->demands[0][0], this->demands[0][1], this->demands[0][2]);
             else {
                 if (!req->takeoff_height || req->takeoff_height < 1.0) {
-                    req->takeoff_height = 1.0;
+                    req->takeoff_height = 2.0;
                 }
                 RCLCPP_INFO(this->get_logger(), "Waiting for Mission Start before takeoff to height");
             }
@@ -473,7 +479,7 @@ void TrajectoryHandler::setAttitude(const rclcpp::Duration time_elapsed) {
     req->roll = this->interpolators[1](time_elapsed_sec);
     req->yaw = this->interpolators[2](time_elapsed_sec);
     req->thrust = this->interpolators.size() >3? this->interpolators[3](time_elapsed_sec): 0.0; // Make interpolate later
-    req->frame_id = "map";
+    req->frame_id = this->frame_id;
     req->auto_arm = true;
 
     while (!this->sa_client->wait_for_service(std::chrono::duration<double>(0.01))) {
@@ -555,19 +561,22 @@ void TrajectoryHandler::gotoTrajectoryPoint(const trajectory_msgs::msg::JointTra
 }
 
 void TrajectoryHandler::takeoff_vehicle(const float height) {
-    auto nav_req = std::make_shared<simple_offboard_msgs::srv::Takeoff::Request>();
-    nav_req->height = height;
+    auto nav_req = std::make_shared<simple_offboard_msgs::srv::Navigate::Request>();
+    nav_req->x = 0;
+    nav_req->y = 0;
+    nav_req->z = height;
     nav_req->speed = 0.5;
+    nav_req->frame_id = this->frame_id;
     nav_req->auto_arm = true;
     nav_req->blocking = true;
 
-    while (!this->takeoff_client->wait_for_service(std::chrono::duration<double>(5.0))) {
+    while (!this->navigate_client->wait_for_service(std::chrono::duration<double>(5.0))) {
         if (!rclcpp::ok() || !this->checkAbort()) {
             throw std::runtime_error("Interrupted while waiting for navigate service. Exiting.");
         }
         RCLCPP_INFO(this->get_logger(), "Navigate Service not available, waiting again...");
     }
-    auto result_future = this->takeoff_client->async_send_request(nav_req);
+    auto result_future = this->navigate_client->async_send_request(nav_req);
     if (result_future.wait_for(std::chrono::duration<double>(this->get_to_first_point_timeout)) != std::future_status::ready)
     {
         throw std::runtime_error("Navigate Service call failed");
@@ -576,6 +585,7 @@ void TrajectoryHandler::takeoff_vehicle(const float height) {
     if (!result->success) {
         throw std::runtime_error("Navigate Service errored with: " + result->message);
     }
+    RCLCPP_INFO(this->get_logger(), "Takeoff Successful");
 }
 
 void TrajectoryHandler::landVehicle() {

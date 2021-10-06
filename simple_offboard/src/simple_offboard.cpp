@@ -636,6 +636,7 @@ void SimpleOffboard::publish(const rclcpp::Time& stamp) {
 		if (this->setpoint_type == VELOCITY) {
 			this->setpoint_velocity.header.stamp = stamp;
 			this->tf_buffer->transform(this->setpoint_velocity, this->setpoint_velocity_transformed, this->local_frame, _transform_delay);
+            // RCLCPP_INFO(this->get_logger(), "Velocity Setpoint Transformed is (%f, %f, %f)", this->setpoint_velocity_transformed.vector.x, this->setpoint_velocity_transformed.vector.y, this->setpoint_velocity_transformed.vector.z);
 		}
 
 	} catch (const tf2::TransformException& e) {
@@ -693,6 +694,19 @@ void SimpleOffboard::publish(const rclcpp::Time& stamp) {
 
         // RCLCPP_INFO(this->get_logger(), "Currently at (%f, %f, %f), going to (%f, %f, %f)", this->local_position->pose.position.x, this->local_position->pose.position.y, this->local_position->pose.position.z, this->position_msg.pose.position.x, this->position_msg.pose.position.y, this->position_msg.pose.position.z);
 	}
+
+    if (this->setpoint_type == VELOCITY) {
+        this->position_raw_msg.type_mask = PositionTarget::IGNORE_PX +
+                                            PositionTarget::IGNORE_PY +
+                                            PositionTarget::IGNORE_PZ +
+                                            PositionTarget::IGNORE_AFX +
+                                            PositionTarget::IGNORE_AFY +
+                                            PositionTarget::IGNORE_AFZ +
+                                            PositionTarget::IGNORE_YAW;
+        this->position_raw_msg.yaw_rate = this->setpoint_yaw_rate;
+        this->position_raw_msg.velocity = this->setpoint_velocity_transformed.vector;
+        this->position_raw_pub->publish(this->position_raw_msg);
+    }
 
     if (this->setpoint_type == ATTITUDE) {
 		this->attitude_pub->publish(this->setpoint_position_transformed);
@@ -788,6 +802,11 @@ bool SimpleOffboard::serve(enum setpoint_type_t sp_type, float x, float y, float
         if (frame_id.empty())
             frame_id = this->local_frame;
 
+        // RCLCPP_INFO(this->get_logger(), "Frame_id is: %s", frame_id.c_str());
+        // for (const auto& kv : this->reference_frames) {
+        //     RCLCPP_INFO(this->get_logger(), "Reference_frames is %s: %s", kv.first.c_str(), kv.second.c_str());
+        // }
+
         // look up for reference frame, if cannot be found use self as reference_frame
         // Note in ROS2 for the reference frame to register, the delimter is '.' e.g. reference_frames.body
         auto search = this->reference_frames.find(frame_id);
@@ -801,7 +820,7 @@ bool SimpleOffboard::serve(enum setpoint_type_t sp_type, float x, float y, float
 		    isnan(pitch) && isnan(roll) && isnan(thrust) &&
 		    isnan(lat) && isnan(lon)) {
 
-            RCLCPP_INFO(this->get_logger(), "Serving Partial 1");
+            // RCLCPP_INFO(this->get_logger(), "Serving Partial 1");
 
             if (this->setpoint_type == POSITION || this->setpoint_type == NAVIGATE || this->setpoint_type == NAVIGATE_GLOBAL || this->setpoint_type == VELOCITY) {
                 this->checkTransformExistsBlocking(this->setpoint_position.header.frame_id, frame_id, stamp, this->transform_timeout);
@@ -828,7 +847,7 @@ bool SimpleOffboard::serve(enum setpoint_type_t sp_type, float x, float y, float
 		    isnan(pitch) && isnan(roll) && isnan(yaw) && isnan(thrust) &&
 		    isnan(lat) && isnan(lon)) {
 
-            RCLCPP_INFO(this->get_logger(), "Serving Partial 2");
+            // RCLCPP_INFO(this->get_logger(), "Serving Partial 2");
 			// change only the yaw rate
 			if (this->setpoint_type == POSITION || this->setpoint_type == NAVIGATE || this->setpoint_type == NAVIGATE_GLOBAL || this->setpoint_type == VELOCITY) {
 				message = "Changing yaw rate only";
@@ -842,7 +861,7 @@ bool SimpleOffboard::serve(enum setpoint_type_t sp_type, float x, float y, float
 			}
         }
 
-        RCLCPP_INFO(this->get_logger(), "Serving Normal 1");
+        // RCLCPP_INFO(this->get_logger(), "Serving Normal 1");
 
         if (!skip) { // Refactor out goto statements.
             // Serve normal commands
@@ -955,7 +974,7 @@ bool SimpleOffboard::serve(enum setpoint_type_t sp_type, float x, float y, float
                     ps.pose.orientation = tf2::toMsg(q);
                 }
                 this->tf_buffer->transform(ps, this->setpoint_position, reference_frame);
-                RCLCPP_INFO(this->get_logger(), "Serve: Setpoint frame is %s (%f, %f, %f)", reference_frame.c_str(), this->setpoint_position.pose.position.x, this->setpoint_position.pose.position.y, this->setpoint_position.pose.position.z);
+                RCLCPP_INFO(this->get_logger(), "Serve: Position Setpoint frame is %s (%f, %f, %f)", reference_frame.c_str(), this->setpoint_position.pose.position.x, this->setpoint_position.pose.position.y, this->setpoint_position.pose.position.z);
             }
 
             if (sp_type == VELOCITY) {
@@ -966,6 +985,7 @@ bool SimpleOffboard::serve(enum setpoint_type_t sp_type, float x, float y, float
                 vel.vector.y = vy;
                 vel.vector.z = vz;
                 this->tf_buffer->transform(vel, this->setpoint_velocity, reference_frame);
+                RCLCPP_INFO(this->get_logger(), "Serve: Velocity Setpoint frame is %s (%f, %f, %f)", reference_frame.c_str(), this->setpoint_velocity.vector.x, this->setpoint_velocity.vector.y, this->setpoint_velocity.vector.z);
             }
 
             if (sp_type == ATTITUDE || sp_type == RATES) {
@@ -1195,7 +1215,7 @@ bool SimpleOffboard::hold(std::shared_ptr<std_srvs::srv::Trigger::Request> req, 
     nav_req->x = 0.0;
     nav_req->y = 0.0;
     nav_req->z = 0.0;
-    nav_req->frame_id = "body";
+    nav_req->frame_id = this->body.child_frame_id;
 
     try {
         auto nav_client = this->create_client<simple_offboard_msgs::srv::SetPosition>("set_position", rmw_qos_profile_services_default, this->callback_group_clients_);
@@ -1239,50 +1259,53 @@ bool SimpleOffboard::takeoff(std::shared_ptr<simple_offboard_msgs::srv::Takeoff:
     RCLCPP_INFO(this->get_logger(), "Received Takeoff Request, requested height set to %f at speed %f", req->height, req->speed);
 
     auto nav_req = std::make_shared<simple_offboard_msgs::srv::Navigate::Request>();
-    // auto nav_res = std::make_shared<simple_offboard_msgs::srv::Navigate::Response>();
+    auto nav_res = std::make_shared<simple_offboard_msgs::srv::Navigate::Response>();
     nav_req->x = 0.0;
     nav_req->y = 0.0;
     nav_req->z = req->height;
     nav_req->speed = req->speed;
-    nav_req->frame_id = "body";
+    nav_req->frame_id = this->body.child_frame_id;
     nav_req->auto_arm = req->auto_arm;
+    nav_req->blocking = req->blocking?req->blocking:false;
 
-    try {
-        auto nav_client = this->create_client<simple_offboard_msgs::srv::Navigate>("navigate", rmw_qos_profile_services_default, this->callback_group_clients_);
-        while (!nav_client->wait_for_service(std::chrono::duration<double>(0.01))) {
-            if (!rclcpp::ok()) {
-                RCLCPP_ERROR(this->get_logger(), "Interrupted while waiting for set mode service. Exiting.");
-                throw std::runtime_error("Interrupted while waiting for set mode service. Exiting.");
-            }
-            RCLCPP_INFO(this->get_logger(), "service not available, waiting again...");
-        }
-        auto result_future = nav_client->async_send_request(nav_req);
-        if (result_future.wait_for(std::chrono::duration<double>(30.0)) != std::future_status::ready)
-        {
-            throw std::runtime_error("Navigate Service call failed");
-        }
-        auto result = result_future.get();
-        if (!result->success) {
-            throw std::runtime_error("Navigate Service errored with: " + result->message);
-        }
-    } catch (const std::exception& e) {
-		res->message = e.what();
-        res->success = false;
-		RCLCPP_ERROR(this->get_logger(), "%s", res->message.c_str());
-		return false;
-	}
+    this->navigate(nav_req, nav_res);
 
-    if (req->blocking) {
-        if(!this->wait_for_at_setpoint("Takeoff", this->takeoff_timeout, 1000, true)){
-             res->success = false;
-            res->message = "Takeoff timed out";
-            RCLCPP_ERROR(this->get_logger(), "Takeoff timed out");
-            return false;
-        }
-    }
-    res->success = true;
-    res->message = "Takeoff Successful";
-    return res->success;
+    // try {
+    //     auto nav_client = this->create_client<simple_offboard_msgs::srv::Navigate>("navigate", rmw_qos_profile_services_default, this->callback_group_clients_);
+    //     while (!nav_client->wait_for_service(std::chrono::duration<double>(0.01))) {
+    //         if (!rclcpp::ok()) {
+    //             RCLCPP_ERROR(this->get_logger(), "Interrupted while waiting for set mode service. Exiting.");
+    //             throw std::runtime_error("Interrupted while waiting for set mode service. Exiting.");
+    //         }
+    //         RCLCPP_INFO(this->get_logger(), "service not available, waiting again...");
+    //     }
+    //     auto result_future = nav_client->async_send_request(nav_req);
+    //     if (result_future.wait_for(std::chrono::duration<double>(30.0)) != std::future_status::ready)
+    //     {
+    //         throw std::runtime_error("Navigate Service call failed");
+    //     }
+    //     auto result = result_future.get();
+    //     if (!result->success) {
+    //         throw std::runtime_error("Navigate Service errored with: " + result->message);
+    //     }
+    // } catch (const std::exception& e) {
+	// 	res->message = e.what();
+    //     res->success = false;
+	// 	RCLCPP_ERROR(this->get_logger(), "%s", res->message.c_str());
+	// 	return false;
+	// }
+
+    // if (req->blocking) {
+    //     if(!this->wait_for_at_setpoint("Takeoff", this->takeoff_timeout, 1000, true)){
+    //          res->success = false;
+    //         res->message = "Takeoff timed out";
+    //         RCLCPP_ERROR(this->get_logger(), "Takeoff timed out");
+    //         return false;
+    //     }
+    // }
+    res->success = res->success; //true;
+    res->message = res->message; //"Takeoff Successful";
+    return true;
 }
 
 int main(int argc, char **argv)
