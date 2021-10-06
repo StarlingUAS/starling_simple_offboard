@@ -1,15 +1,21 @@
 <?xml version="1.0"?>
 <launch>
+    <arg name="vehicle_namespace" default="" />
 
     <node pkg="tf2_ros" exec="static_transform_publisher" name="map_flipped_frame" args="0 0 0 3.1415926 3.1415926 0 map map_flipped"/>
 
     <!-- simplified offboard control -->
-    <node name="simple_offboard" pkg="simple_offboard" exec="simple_offboard" output="screen" clear_params="true">
-        <param name="reference_frames.body" value="map"/>
-        <param name="reference_frames.base_link" value="map"/>
-        <param name="reference_frames.navigate_target" value="map"/>
-        <param name="reference_frames.main_camera_optical" value="map"/>
+    <node name="simple_offboard" pkg="simple_offboard" exec="simple_offboard" output="screen" clear_params="true" respawn="true">
+        <param name="mavros/local_position/tf/frame_id" value="map"/>
+        <param name="mavros/local_position/tf/child_frame_id" value="$(var vehicle_namespace)/base_link"/>
+        <param name="target_frame" value="$(var vehicle_namespace)/navigate_target"/>
+        <param name="setpoint" value="$(var vehicle_namespace)/setpoint"/>
+        <param name="body_frame" value="$(var vehicle_namespace)/body"/>
+        <param name="reference_frames.$(var vehicle_namespace)/body" value="map"/>
+        <param name="reference_frames.$(var vehicle_namespace)/base_link" value="map"/>
+        <param name="reference_frames.$(var vehicle_namespace)/navigate_target" value="map"/>
+        <param name="reference_frames.$(var vehicle_namespace)/main_camera_optical" value="map"/>
     </node>
 
-    <node name="trajectory_handler" pkg="simple_offboard" exec="trajectory_handler" output="screen"/>
+    <node name="trajectory_handler" pkg="simple_offboard" exec="trajectory_handler" output="screen" respawn="true"/>
 </launch>

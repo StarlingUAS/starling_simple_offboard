@@ -5,7 +5,7 @@
         <push-ros-namespace namespace="$(var vehicle_namespace)"/>
         <!-- clover_ros2 -->
         <include file="$(find-pkg-share simple_offboard)/launch/simple_offboard.launch.xml">
-            <!-- <arg name="simulator" value="$(var simulator)"/> -->
+            <arg name="vehicle_namespace" value="$(var vehicle_namespace)"/>
         </include>
     </group>
 
