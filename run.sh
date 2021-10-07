@@ -1,6 +1,6 @@
 #!/bin/bash
 
-if [ ! -v $VEHICLE_MAVLINK_SYSID]; then
+if [ ! -v $VEHICLE_MAVLINK_SYSID ]; then
     export VEHICLE_MAVLINK_SYSID=$VEHICLE_MAVLINK_SYSID
     echo "VEHICLE_MAVLINK_SYSID setting to $VEHICLE_MAVLINK_SYSID"
 else
