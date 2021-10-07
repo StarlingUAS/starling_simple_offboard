@@ -588,7 +588,7 @@ void SimpleOffboard::handleLocalPosition(const PoseStamped::SharedPtr pose)
 inline void SimpleOffboard::publishBodyFrame()
 {
     auto stamp = this->now();
-	if (!this->body.child_frame_id.empty()) {
+	if (!this->body.child_frame_id.empty() && this->body.header.stamp < this->local_position->header.stamp) {
 
         tf2::Quaternion q;
         q.setRPY(0, 0, tf2::getYaw(this->local_position->pose.orientation));
@@ -602,7 +602,7 @@ inline void SimpleOffboard::publishBodyFrame()
         this->transform_broadcaster->sendTransform(this->body);
     }
 
-    if (!this->base_link.child_frame_id.empty()) {
+    if (!this->base_link.child_frame_id.empty() && this->base_link.header.stamp < this->local_position->header.stamp) {
         this->base_link.transform.rotation = this->local_position->pose.orientation;
         this->base_link.transform.translation.x = this->local_position->pose.position.x;
         this->base_link.transform.translation.y = this->local_position->pose.position.y;
