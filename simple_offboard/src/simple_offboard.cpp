@@ -160,6 +160,7 @@ class SimpleOffboard : public rclcpp::Node
         string local_frame;
         string fcu_frame;
         std::chrono::duration<double> setpoint_rate;
+        std::chrono::duration<double> tf_broadcast_rate;
         std::chrono::duration<double> transform_timeout; // May want to convert to std::chrono::duration?
         std::chrono::duration<double> telemetry_transform_timeout;
         std::chrono::duration<double> offboard_timeout;
@@ -202,6 +203,10 @@ class SimpleOffboard : public rclcpp::Node
         bool busy = false;
         bool wait_armed = false;
         bool nav_from_sp_flag = false;
+
+        rclcpp::Time base_link_publish_time;
+        rclcpp::Time body_publish_time;
+        rclcpp::TimerBase::SharedPtr tf_publish_timer;
 
         // Service Clients
         rclcpp::Client<mavros_msgs::srv::CommandBool>::SharedPtr        arming;
@@ -290,6 +295,7 @@ SimpleOffboard::SimpleOffboard() :
 
     // Get Timeout parameters
     setpoint_rate = this->get_timeout_parameter("setpoint_rate", 30.0, true);
+    tf_broadcast_rate = this->get_timeout_parameter("tf_broadcast_rate", 60.0, true);
     state_timeout = this->get_timeout_parameter("state_timeout", 3.0);
 	local_position_timeout = this->get_timeout_parameter("local_position_timeout", 2.0);
 	velocity_timeout = this->get_timeout_parameter("velocity_timeout", 2.0);
@@ -358,6 +364,11 @@ SimpleOffboard::SimpleOffboard() :
 	this->position_raw_msg.header.frame_id = this->local_frame;
 	this->position_raw_msg.coordinate_frame = PositionTarget::FRAME_LOCAL_NED;
 	this->rates_msg.header.frame_id = this->fcu_frame;
+
+    this->base_link_publish_time = this->now();
+    this->body_publish_time = this->now();
+
+    this->tf_publish_timer = this->create_wall_timer(this->tf_broadcast_rate, [this](){this->publishBodyFrame();});
 
     this->publish(this->now());
 
@@ -581,14 +592,18 @@ void SimpleOffboard::handleState(const mavros_msgs::msg::State::SharedPtr s)
 void SimpleOffboard::handleLocalPosition(const PoseStamped::SharedPtr pose)
 {
 	this->local_position = pose;
-	this->publishBodyFrame();
+	// this->publishBodyFrame();
 	// TODO: terrain?, home?
 }
 
 inline void SimpleOffboard::publishBodyFrame()
 {
-    auto stamp = this->now();
-	if (!this->body.child_frame_id.empty() && this->body.header.stamp < this->local_position->header.stamp) {
+    if (!this->local_position) {
+        return;
+    }
+
+    // auto duration = std::chrono::duration<double>(1.0/1.0);
+	if ( (!this->body.child_frame_id.empty()) && this->body_publish_time < this->local_position->header.stamp) {
 
         tf2::Quaternion q;
         q.setRPY(0, 0, tf2::getYaw(this->local_position->pose.orientation));
@@ -600,17 +615,20 @@ inline void SimpleOffboard::publishBodyFrame()
         this->body.header.frame_id = this->local_position->header.frame_id;
         this->body.header.stamp = this->local_position->header.stamp;
         this->transform_broadcaster->sendTransform(this->body);
+        this->body_publish_time = rclcpp::Time(this->body.header.stamp);
+        // RCLCPP_INFO(this->get_logger(), "BODY PUBLISHED AT %f to frame %s", this->body_publish_time.seconds(), this->body.header.frame_id.c_str());
     }
 
-    if (!this->base_link.child_frame_id.empty() && this->base_link.header.stamp < this->local_position->header.stamp) {
-        this->base_link.transform.rotation = this->local_position->pose.orientation;
-        this->base_link.transform.translation.x = this->local_position->pose.position.x;
-        this->base_link.transform.translation.y = this->local_position->pose.position.y;
-        this->base_link.transform.translation.z = this->local_position->pose.position.z;
-        this->base_link.header.frame_id = this->local_position->header.frame_id;
-        this->base_link.header.stamp = this->local_position->header.stamp;
-        this->transform_broadcaster->sendTransform(this->base_link);
-    }
+    // if (!this->base_link.child_frame_id.empty() && this->base_link_publish_time < this->local_position->header.stamp) {
+    //     this->base_link.transform.rotation = this->local_position->pose.orientation;
+    //     this->base_link.transform.translation.x = this->local_position->pose.position.x;
+    //     this->base_link.transform.translation.y = this->local_position->pose.position.y;
+    //     this->base_link.transform.translation.z = this->local_position->pose.position.z;
+    //     this->base_link.header.frame_id = this->local_position->header.frame_id;
+    //     this->base_link.header.stamp = this->local_position->header.stamp;
+        // this->transform_broadcaster->sendTransform(this->base_link);
+    //     this->base_link_publish_time = rclcpp::Time(this->base_link.header.stamp);
+    // }
 }
 
 void SimpleOffboard::publish(const rclcpp::Time& stamp) {
@@ -769,6 +787,10 @@ inline void SimpleOffboard::checkManualControl()
 
 inline void SimpleOffboard::checkState()
 {
+    RCLCPP_INFO(this->get_logger(), "Checking mavros connection");
+    if (!this->state)
+        throw std::runtime_error("No state received since startup, check mavros connection");
+
     RCLCPP_INFO(this->get_logger(), "Checking state timeout");
 	if ( (this->now() - this->state->header.stamp) > this->state_timeout )
 		throw std::runtime_error("State timeout, check mavros settings");
