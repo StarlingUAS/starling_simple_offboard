@@ -603,7 +603,7 @@ inline void SimpleOffboard::publishBodyFrame()
     }
 
     // auto duration = std::chrono::duration<double>(1.0/1.0);
-	if ( (!this->body.child_frame_id.empty()) && this->body_publish_time < this->local_position->header.stamp) {
+	if ( (!this->body.child_frame_id.empty())) {
 
         tf2::Quaternion q;
         q.setRPY(0, 0, tf2::getYaw(this->local_position->pose.orientation));
@@ -615,20 +615,20 @@ inline void SimpleOffboard::publishBodyFrame()
         this->body.header.frame_id = this->local_position->header.frame_id;
         this->body.header.stamp = this->local_position->header.stamp;
         this->transform_broadcaster->sendTransform(this->body);
-        this->body_publish_time = rclcpp::Time(this->body.header.stamp);
+        // this->body_publish_time = rclcpp::Time(this->body.header.stamp);
         // RCLCPP_INFO(this->get_logger(), "BODY PUBLISHED AT %f to frame %s", this->body_publish_time.seconds(), this->body.header.frame_id.c_str());
     }
 
-    // if (!this->base_link.child_frame_id.empty() && this->base_link_publish_time < this->local_position->header.stamp) {
-    //     this->base_link.transform.rotation = this->local_position->pose.orientation;
-    //     this->base_link.transform.translation.x = this->local_position->pose.position.x;
-    //     this->base_link.transform.translation.y = this->local_position->pose.position.y;
-    //     this->base_link.transform.translation.z = this->local_position->pose.position.z;
-    //     this->base_link.header.frame_id = this->local_position->header.frame_id;
-    //     this->base_link.header.stamp = this->local_position->header.stamp;
-        // this->transform_broadcaster->sendTransform(this->base_link);
-    //     this->base_link_publish_time = rclcpp::Time(this->base_link.header.stamp);
-    // }
+    if (!this->base_link.child_frame_id.empty()) {
+        this->base_link.transform.rotation = this->local_position->pose.orientation;
+        this->base_link.transform.translation.x = this->local_position->pose.position.x;
+        this->base_link.transform.translation.y = this->local_position->pose.position.y;
+        this->base_link.transform.translation.z = this->local_position->pose.position.z;
+        this->base_link.header.frame_id = this->local_position->header.frame_id;
+        this->base_link.header.stamp = this->local_position->header.stamp;
+        this->transform_broadcaster->sendTransform(this->base_link);
+        // this->base_link_publish_time = rclcpp::Time(this->base_link.header.stamp);
+    }
 }
 
 void SimpleOffboard::publish(const rclcpp::Time& stamp) {
