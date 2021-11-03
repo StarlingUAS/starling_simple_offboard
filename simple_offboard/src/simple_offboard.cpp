@@ -47,6 +47,7 @@
 #include "mavros_msgs/msg/manual_control.hpp"
 #include "mavros_msgs/srv/command_bool.hpp"
 #include "mavros_msgs/srv/set_mode.hpp"
+#include "mavros_msgs/srv/command_tol.hpp"
 #include "mavros_msgs/srv/command_long.hpp"
 
 #include "simple_offboard_msgs/srv/get_telemetry.hpp"
@@ -136,7 +137,7 @@ class SimpleOffboard : public rclcpp::Node
         void wait_for_offboard();
         void wait_for_arm();
         void wait_for_set_mode(const string custom_mode, std::chrono::duration<double> timeout);
-        bool wait_for_at_setpoint(const string action, const std::chrono::duration<double> timeout, const uint32_t sleep_delay=100, const bool zaxis_only=false);
+        bool wait_for_at_setpoint(const string action, const std::chrono::duration<double> timeout, bool& interrupt, const uint32_t sleep_delay=100, const bool zaxis_only=false);
         bool checkTransformExistsBlocking(const string& target_frame, const string& source_frame, const rclcpp::Time& time, const rclcpp::Duration& timeout);
         void publishSetpoint(const rclcpp::Time& stamp, bool auto_arm);
         void restartSetpointTimer();
@@ -178,6 +179,9 @@ class SimpleOffboard : public rclcpp::Node
         bool auto_release;
         bool land_only_in_offboard, nav_from_sp, check_kill_switch;
         std::map<string, string> reference_frames;
+        string firmware;
+        bool is_ardupilot;
+        string offboard_mode_string;
 
         // Containers
         enum setpoint_type_t setpoint_type = NONE;
@@ -211,6 +215,7 @@ class SimpleOffboard : public rclcpp::Node
         // Service Clients
         rclcpp::Client<mavros_msgs::srv::CommandBool>::SharedPtr        arming;
         rclcpp::Client<mavros_msgs::srv::SetMode>::SharedPtr            set_mode;
+        rclcpp::Client<mavros_msgs::srv::CommandTOL>::SharedPtr         takeoff_client;
         rclcpp::Client<mavros_msgs::srv::CommandLong>::SharedPtr        mavros_command;
 
         // Publishers
@@ -291,6 +296,7 @@ SimpleOffboard::SimpleOffboard() :
     this->get_parameter_or("body_frame", this->body.child_frame_id, string("body"));
     this->get_parameter_or("fcu_frame", this->base_link.child_frame_id, this->fcu_frame);
     this->get_parameter_or("location_arrival_epsilon", this->location_arrival_epsilon, 0.1f);
+    this->get_parameter_or("firmware", this->firmware, string("px4"));
 	this->get_parameters("reference_frames", this->reference_frames); // Params in format reference_frames.<frame_id>
 
     // Get Timeout parameters
@@ -311,6 +317,7 @@ SimpleOffboard::SimpleOffboard() :
 
     // Initialise Service Clients
     this->arming = this->create_client<mavros_msgs::srv::CommandBool>("mavros/cmd/arming", rmw_qos_profile_services_default, this->callback_group_clients_);
+    this->takeoff_client = this->create_client<mavros_msgs::srv::CommandTOL>("mavros/cmd/takeoff", rmw_qos_profile_services_default, this->callback_group_clients_);
     this->set_mode = this->create_client<mavros_msgs::srv::SetMode>("mavros/set_mode", rmw_qos_profile_services_default, this->callback_group_clients_);
     this->mavros_command = this->create_client<mavros_msgs::srv::CommandLong>("mavros/cmd/command", rmw_qos_profile_services_default, this->callback_group_clients_);
 
@@ -367,6 +374,18 @@ SimpleOffboard::SimpleOffboard() :
 
     this->base_link_publish_time = this->now();
     this->body_publish_time = this->now();
+
+    this->is_ardupilot = false;
+    if(this->firmware == "ardupilot"){
+        RCLCPP_INFO(this->get_logger(), "Offboard control for ardupilot");
+        this->offboard_mode_string = "GUIDED";
+        this->is_ardupilot = true;
+    } else  if (this->firmware == "px4") {
+        RCLCPP_INFO(this->get_logger(), "Offboard control for px4");
+        this->offboard_mode_string = "OFFBOARD";
+    } else {
+        throw std::runtime_error("Firmware not recognised, only accepts 'ardupilot' and 'px4'");
+    }
 
     this->tf_publish_timer = this->create_wall_timer(this->tf_broadcast_rate, [this](){this->publishBodyFrame();});
 
@@ -444,15 +463,15 @@ void SimpleOffboard::sendSetModeRequest(string custom_mode) {
 }
 
 void SimpleOffboard::wait_for_offboard(){
-    if (this->state->mode == "OFFBOARD") {
-        RCLCPP_INFO(this->get_logger(), "Already Offboard Mode");
+    if (this->state->mode == this->offboard_mode_string) {
+        RCLCPP_INFO(this->get_logger(), "Already Offboard/GUIDED Mode");
         return;
     }
     RCLCPP_INFO(this->get_logger(), "Sending OFFBOARD Request");
-    this->sendSetModeRequest("OFFBOARD");
+    this->sendSetModeRequest(this->offboard_mode_string);
 
     auto start = this->now();
-    while(this->state->mode != "OFFBOARD") {
+    while(this->state->mode != this->offboard_mode_string) {
         RCLCPP_INFO(this->get_logger(), "Waiting for Offboard");
         if (this->now() - start > this->offboard_timeout) {
             RCLCPP_ERROR(this->get_logger(), "Offboard timed out");
@@ -460,7 +479,7 @@ void SimpleOffboard::wait_for_offboard(){
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
-    RCLCPP_INFO(this->get_logger(), "Confirmed In OFFBOARD Mode");
+    RCLCPP_INFO(this->get_logger(), "Confirmed In OFFBOARD/GUIDED Mode");
 }
 
 void SimpleOffboard::wait_for_arm(){
@@ -517,12 +536,16 @@ void SimpleOffboard::wait_for_set_mode(const string custom_mode, std::chrono::du
     RCLCPP_INFO(this->get_logger(), "Confirmed Land Mode");
 }
 
-bool SimpleOffboard::wait_for_at_setpoint(const string action, const std::chrono::duration<double> timeout, const uint32_t sleep_delay, const bool zaxis_only) {
+bool SimpleOffboard::wait_for_at_setpoint(const string action, const std::chrono::duration<double> timeout, bool& interrupt, const uint32_t sleep_delay, const bool zaxis_only) {
     bool xcomp, ycomp, zcomp;
     auto start = this->now();
     do{
         RCLCPP_INFO(this->get_logger(), "Waiting for " + action);
         if (this->now() - start > timeout) {
+            return false;
+        }
+        if (interrupt) {
+            RCLCPP_ERROR(this->get_logger(), "Waiting Interrupted");
             return false;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(sleep_delay));
@@ -583,7 +606,7 @@ PoseStamped SimpleOffboard::globalToLocal(double lat, double lon)
 void SimpleOffboard::handleState(const mavros_msgs::msg::State::SharedPtr s)
 {
 	this->state = s;
-	if (s->mode != "OFFBOARD") {
+	if (s->mode != this->offboard_mode_string) {
 		// flight intercepted
 		this->nav_from_sp_flag = false;
 	}
@@ -591,6 +614,8 @@ void SimpleOffboard::handleState(const mavros_msgs::msg::State::SharedPtr s)
 
 void SimpleOffboard::handleLocalPosition(const PoseStamped::SharedPtr pose)
 {
+    if(!this->local_position) 
+        RCLCPP_INFO(this->get_logger(), "Received initial local position");
 	this->local_position = pose;
 	// this->publishBodyFrame();
 	// TODO: terrain?, home?
@@ -798,6 +823,7 @@ inline void SimpleOffboard::checkState()
     RCLCPP_INFO(this->get_logger(), "Checking connected state");
 	if (!this->state->connected)
 		throw std::runtime_error("No connection to FCU, https://clover.coex.tech/connection");
+    RCLCPP_INFO(this->get_logger(), "Finished checks");
 }
 
 bool SimpleOffboard::serve(enum setpoint_type_t sp_type, float x, float y, float z, float vx, float vy, float vz,
@@ -816,9 +842,13 @@ bool SimpleOffboard::serve(enum setpoint_type_t sp_type, float x, float y, float
         // Checks
         this->checkState();
 
-        if (auto_arm && this->manual_control) {
-            this->checkManualControl();
+        if (!this->is_ardupilot) {
+            if (auto_arm && this->manual_control) {
+                this->checkManualControl();
+            }
         }
+
+        RCLCPP_INFO(this->get_logger(), "Check 1");
 
         // default frame is local frame
         if (frame_id.empty())
@@ -835,6 +865,8 @@ bool SimpleOffboard::serve(enum setpoint_type_t sp_type, float x, float y, float
         const string& reference_frame = search == reference_frames.end() ? frame_id: search->second;
 
         bool skip = false;
+
+        RCLCPP_INFO(this->get_logger(), "Check 2");
 
         // Serve "partial" commands
         if (!auto_arm && std::isfinite(yaw) &&
@@ -910,8 +942,13 @@ bool SimpleOffboard::serve(enum setpoint_type_t sp_type, float x, float y, float
             }
 
             if (sp_type == NAVIGATE || sp_type == NAVIGATE_GLOBAL) {
+                // RCLCPP_INFO(this->get_logger(), "Checking local position");
+                if(!this->local_position) 
+                    throw std::runtime_error("No local position received");
+
                 if (this->now() - this->local_position->header.stamp > this->local_position_timeout)
-                    throw std::runtime_error("No local position, check settings");
+                    throw std::runtime_error("Local position timeout, check settings");
+                // RCLCPP_INFO(this->get_logger(), "After Checking local position");
 
                 if (speed < 0)
                     throw std::runtime_error("Navigate speed must be positive, " + std::to_string(speed) + " passed");
@@ -949,7 +986,7 @@ bool SimpleOffboard::serve(enum setpoint_type_t sp_type, float x, float y, float
             	x = xy_in_req_frame.pose.position.x;
             	y = xy_in_req_frame.pose.position.y;
             }
-
+            
             // Everything fine - switch setpoint type
             this->setpoint_type = sp_type;
 
@@ -1058,12 +1095,60 @@ void SimpleOffboard::publishSetpoint(const rclcpp::Time& stamp, bool auto_arm) {
         this->wait_for_offboard(); // Check offboard
         this->wait_for_arm();      // Arm drone
         this->wait_armed = false;
-    } else if (this->state->mode != "OFFBOARD") {
+    } else if (this->state->mode != this->offboard_mode_string) {
         this->setpoint_timer->cancel();
-        throw std::runtime_error("Copter is not in OFFBOARD mode, use auto_arm?");
+        throw std::runtime_error("Copter is not in OFFBOARD/GUIDED mode, use auto_arm?");
     } else if (!this->state->armed) {
         this->setpoint_timer->cancel();
         throw std::runtime_error("Copter is not armed, use auto_arm?");
+    }
+
+    if (this->is_ardupilot && this->local_position->pose.position.z < 0.5) {
+
+        auto b = PoseStamped();
+        b.pose.position.z = 2.0;
+        this->position_pub->publish(this->position_msg);
+        RCLCPP_INFO(this->get_logger(), "Sending Ardupilot Initial Request");
+
+        bool tkoff_success = false;
+        for(int i=0; i < 20; i++) {
+            RCLCPP_INFO(this->get_logger(), "Attempting takeoff required by autopilot before guided");
+            auto tkoff_req = std::make_shared<mavros_msgs::srv::CommandTOL::Request>();
+            tkoff_req->min_pitch = 0.0;
+            tkoff_req->yaw = 0.0;
+            tkoff_req->latitude = 0.0;
+            tkoff_req->longitude = 0.0;
+            tkoff_req->altitude = 2.0; //this->target.transform.translation.z;
+            while (!this->takeoff_client->wait_for_service(std::chrono::duration<int>(2))) {
+                if (!rclcpp::ok()) {
+                    RCLCPP_ERROR(this->get_logger(), "Interrupted while waiting for ardupilot takeoff. Exiting.");
+                    throw std::runtime_error("Interrupted while waiting for ardupilot takeoff service. Exiting.");
+                    return;
+                }
+                RCLCPP_INFO(this->get_logger(), "service not available, waiting again...");
+            }
+            auto result_future = this->takeoff_client->async_send_request(tkoff_req);
+
+            if (result_future.wait_for(std::chrono::duration<double>(10.0)) != std::future_status::ready)
+            {
+                RCLCPP_ERROR(this->get_logger(), "Takeoff service call failed :(");
+                throw std::runtime_error("Takeoff Service call failed");
+                return;
+            }
+
+            auto res = result_future.get();
+            if(res->success) {
+                RCLCPP_INFO(this->get_logger(), "Takeoff Attempt " + std::to_string(i) + " Successful!");  
+                tkoff_success = true;
+                break;
+            } else {
+                RCLCPP_INFO(this->get_logger(), "Takeoff Attempt " + std::to_string(i) + " Failed, Code: " + std::to_string(res->result) );  
+            }
+        }
+
+        if(!tkoff_success) {
+            throw std::runtime_error("Takeoff Unsuccessful");
+        }
     }
 }
 
@@ -1159,10 +1244,14 @@ bool SimpleOffboard::getTelemetry(std::shared_ptr<GetTelemetry::Request> req, st
 bool SimpleOffboard::navigate(std::shared_ptr<Navigate::Request> req, std::shared_ptr<Navigate::Response> res) {
     RCLCPP_INFO(this->get_logger(), "Received Navigate Request to (%f, %f, %f, yaw: %f) speed: %f, frame: %s, auto_arm: %s, blocking %s", req->x, req->y, req->z, req->yaw, req->speed, req->frame_id.c_str(), req->auto_arm?"true":"false", req->blocking?"true":"false");
 	this->serve(NAVIGATE, req->x, req->y, req->z, NAN, NAN, NAN, NAN, NAN, req->yaw, NAN, NAN, req->yaw_rate, NAN, NAN, NAN, req->speed, req->frame_id, req->auto_arm, res->success, res->message);
+    if (!res->success) {
+        RCLCPP_ERROR(this->get_logger(), "NAVIGATE FAILED: " + res->message);
+        return res->success;
+    }
     if (req->blocking) {
-        if(!this->wait_for_at_setpoint("Navigate", std::chrono::duration<double>(36000), 1000)){
+        if(!this->wait_for_at_setpoint("Navigate", std::chrono::duration<double>(36000), this->busy, 1000)){
             res->success = false;
-            res->message = res->message + " Blocking Navigate timed out";
+            // res->message = res->message + " Blocking Navigate timed out";
             RCLCPP_ERROR(this->get_logger(), res->message);
             return false;
         } else {
@@ -1209,14 +1298,16 @@ bool SimpleOffboard::land(std::shared_ptr<std_srvs::srv::Trigger::Request> req, 
 		this->checkState();
 
 		if (this->land_only_in_offboard) {
-			if (this->state->mode != "OFFBOARD") {
-				throw std::runtime_error("Copter is not in OFFBOARD mode");
+			if (this->state->mode != this->offboard_mode_string) {
+				throw std::runtime_error("Copter is not in OFFBOARD/GUIDED mode to land");
 			}
 		}
 
-        this->sendSetModeRequest("AUTO.LAND");
+        string land_cmd = this->is_ardupilot?"AUTO.LAND":"LAND";
+        this->sendSetModeRequest(land_cmd);
 
-		this->wait_for_set_mode("AUTO.LAND", this->land_timeout);
+		this->wait_for_set_mode(land_cmd, this->land_timeout);
+        RCLCPP_INFO(this->get_logger(), "Land Request Complete");
         busy = false;
         return true;
 
