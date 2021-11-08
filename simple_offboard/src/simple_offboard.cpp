@@ -1303,7 +1303,7 @@ bool SimpleOffboard::land(std::shared_ptr<std_srvs::srv::Trigger::Request> req, 
 			}
 		}
 
-        string land_cmd = this->is_ardupilot?"AUTO.LAND":"LAND";
+        string land_cmd = this->is_ardupilot ? "LAND" : "AUTO.LAND";
         this->sendSetModeRequest(land_cmd);
 
 		this->wait_for_set_mode(land_cmd, this->land_timeout);
