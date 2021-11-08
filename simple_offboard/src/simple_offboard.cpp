@@ -1118,7 +1118,7 @@ void SimpleOffboard::publishSetpoint(const rclcpp::Time& stamp, bool auto_arm) {
             tkoff_req->yaw = 0.0;
             tkoff_req->latitude = 0.0;
             tkoff_req->longitude = 0.0;
-            tkoff_req->altitude = 2.0; //this->target.transform.translation.z;
+            tkoff_req->altitude = this->target.transform.translation.z;
             while (!this->takeoff_client->wait_for_service(std::chrono::duration<int>(2))) {
                 if (!rclcpp::ok()) {
                     RCLCPP_ERROR(this->get_logger(), "Interrupted while waiting for ardupilot takeoff. Exiting.");
