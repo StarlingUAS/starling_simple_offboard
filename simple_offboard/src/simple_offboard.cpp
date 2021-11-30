@@ -294,8 +294,8 @@ SimpleOffboard::SimpleOffboard() :
 	this->get_parameters("reference_frames", this->reference_frames); // Params in format reference_frames.<frame_id>
 
     // Get Timeout parameters
-    setpoint_rate = this->get_timeout_parameter("setpoint_rate", 30.0, true);
-    tf_broadcast_rate = this->get_timeout_parameter("tf_broadcast_rate", 60.0, true);
+    setpoint_rate = this->get_timeout_parameter("setpoint_rate", 15.0, true);
+    tf_broadcast_rate = this->get_timeout_parameter("tf_broadcast_rate", 10.0, true);
     state_timeout = this->get_timeout_parameter("state_timeout", 3.0);
 	local_position_timeout = this->get_timeout_parameter("local_position_timeout", 2.0);
 	velocity_timeout = this->get_timeout_parameter("velocity_timeout", 2.0);

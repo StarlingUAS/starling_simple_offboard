@@ -16,7 +16,7 @@
         <param name="reference_frames.$(var vehicle_namespace)/navigate_target" value="map"/>
         <param name="reference_frames.$(var vehicle_namespace)/main_camera_optical" value="map"/>
         <param name="setpoint_rate" value="15.0"/>
-        <param name="tf_broadcast_rate" value="20.0"/>
+        <param name="tf_broadcast_rate" value="10.0"/>
     </node>
 
     <node name="trajectory_handler" pkg="simple_offboard" exec="trajectory_handler" output="screen" respawn="true"/>
